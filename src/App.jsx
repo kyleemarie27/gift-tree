@@ -172,13 +172,14 @@ function Main({ session }) {
   let body;
   if (page === 'person' && byId[arg] && arg !== uid) body = <PersonPage ctx={ctx} person={byId[arg]} />;
   else if (page === 'family') body = <Family ctx={ctx} />;
+  else if (page === 'shopping') body = <MyShoppingPage ctx={ctx} />;
   else if (page === 'santa' && arg === 'new') body = <SantaCreate ctx={ctx} />;
   else if (page === 'santa' && arg && d.events.find((e) => e.id === arg)) body = <SantaGroup ctx={ctx} ev={d.events.find((e) => e.id === arg)} />;
   else if (page === 'santa') body = <SantaHome ctx={ctx} />;
   else if (page === 'me') body = <MePage ctx={ctx} />;
   else body = <MyList ctx={ctx} />;
 
-  const tab = page === 'person' ? 'family' : ['family', 'santa', 'me'].includes(page) ? page : 'home';
+  const tab = page === 'person' || page === 'shopping' ? 'family' : ['family', 'santa', 'me'].includes(page) ? page : 'home';
   return (
     <>
       {isDemo && <div className="demo-banner">👀 Demo mode with pretend family. Nothing is saved. <a href="/">Exit</a></div>}
@@ -471,14 +472,108 @@ function ItemForm({ item, uid, onSaved, onCancel }) {
 
 /* ───────────────────────── family ───────────────────────── */
 
+// "$1,200" / "~$80" / "80" → 1200 / 80 / 80. Ranges like "$50-80" use the first number.
+function parsePrice(s) {
+  if (s == null) return null;
+  const m = String(s).replace(/,/g, '').match(/\d+(\.\d+)?/);
+  return m ? Number(m[0]) : null;
+}
+const money = (n) => '$' + Math.round(n).toLocaleString();
+
+// What one of MY claims costs me: what I entered, else the list price (split evenly if chipping in).
+function claimCost(c, d) {
+  if (c.amount != null) return { value: Number(c.amount), estimated: false };
+  const item = c.item_id && d.items.find((i) => i.id === c.item_id);
+  const price = item ? parsePrice(item.price) : null;
+  if (price == null) return { value: 0, estimated: true, unknown: true };
+  if (c.kind === 'split') {
+    const people = d.claims.filter((x) => x.item_id === c.item_id).length || 1;
+    return { value: price / people, estimated: true };
+  }
+  return { value: price, estimated: false };
+}
+
+function shoppingStats(ctx) {
+  const { uid, d } = ctx;
+  const mine = d.claims.filter((c) => c.claimer_id === uid);
+  const per = {};
+  let total = 0, unknown = 0;
+  for (const c of mine) {
+    const cost = claimCost(c, d);
+    total += cost.value;
+    if (cost.unknown) unknown++;
+    const p = (per[c.recipient_id] ||= { count: 0, total: 0, claims: [] });
+    p.count++; p.total += cost.value; p.claims.push({ ...c, cost });
+  }
+  return { mine, per, total, unknown };
+}
+
+function useBudget(uid) {
+  const key = 'gift-tree-budget-' + uid;
+  const [budget, setBudgetState] = useState(() => { try { return localStorage.getItem(key) || ''; } catch { return ''; } });
+  const setBudget = (v) => { setBudgetState(v); try { localStorage.setItem(key, v); } catch { /* private mode */ } };
+  return [budget, setBudget];
+}
+
+function BudgetSummary({ ctx, full }) {
+  const { uid } = ctx;
+  const { mine, per, total, unknown } = shoppingStats(ctx);
+  const [budget, setBudget] = useBudget(uid);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(budget);
+  const b = parsePrice(budget);
+  const pct = b ? Math.min(100, (total / b) * 100) : 0;
+  const over = b && total > b;
+  const people = Object.keys(per).length;
+
+  return (
+    <section className="card budget-card">
+      <div className="row between">
+        <h2>My shopping 🛍️</h2>
+        {!full && <a href="#/shopping" className="link tiny">See all</a>}
+      </div>
+      <div className="stat-row">
+        <div className="stat"><span>Spent so far</span><strong>{money(total)}</strong></div>
+        <div className="stat"><span>Gifts</span><strong>{mine.length}</strong></div>
+        <div className="stat"><span>People</span><strong>{people}</strong></div>
+      </div>
+      {b ? (
+        <>
+          <div className={'meter' + (over ? ' over' : '')} role="progressbar" aria-valuemin="0" aria-valuemax={b} aria-valuenow={Math.round(total)}>
+            <span style={{ width: pct + '%' }} />
+          </div>
+          <div className="row between tiny">
+            <span className={over ? 'error' : 'muted'}>
+              {over ? `${money(total - b)} over budget` : `${money(b - total)} left of ${money(b)}`}
+            </span>
+            <button className="link tiny" onClick={() => { setDraft(budget); setEditing(true); }}>change budget</button>
+          </div>
+        </>
+      ) : !editing && (
+        <button className="link tiny" onClick={() => setEditing(true)}>+ Set a total budget to track your pace</button>
+      )}
+      {editing && (
+        <form className="row gap" style={{ marginTop: 10 }} onSubmit={(e) => { e.preventDefault(); setBudget(draft); setEditing(false); }}>
+          <input className="grow" inputMode="decimal" placeholder="e.g. $1,000" value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus />
+          <button className="btn sm primary">Save</button>
+          {budget && <button type="button" className="btn sm ghost" onClick={() => { setBudget(''); setEditing(false); }}>Clear</button>}
+        </form>
+      )}
+      {unknown > 0 && <p className="tiny muted" style={{ marginBottom: 0 }}>{unknown} {unknown === 1 ? 'gift has' : 'gifts have'} no price yet. Add what you paid under “See all.”</p>}
+      <p className="tiny muted" style={{ marginBottom: 0 }}>Only you can see this, and your budget stays on this device.</p>
+    </section>
+  );
+}
+
 function Family({ ctx }) {
   const { uid, me, d } = ctx;
   const others = d.profiles.filter((p) => p.id !== uid && p.name);
   others.sort((a, b) => (b.id === me.partner_id) - (a.id === me.partner_id) || a.name.localeCompare(b.name));
-  const myClaims = d.claims.filter((c) => c.claimer_id === uid);
+  const { per } = shoppingStats(ctx);
 
   return (
     <>
+      <BudgetSummary ctx={ctx} />
       <section className="card">
         <h1 className="display">Family</h1>
         <p className="muted">Tap someone to see their list and claim a gift.</p>
@@ -492,49 +587,101 @@ function Family({ ctx }) {
           {others.map((p) => {
             const items = d.items.filter((i) => i.owner_id === p.id);
             const open = items.filter((i) => !d.claims.some((c) => c.item_id === i.id && c.kind === 'full')).length;
-            const mineFor = myClaims.filter((c) => c.recipient_id === p.id).length;
+            const mineFor = per[p.id];
             return (
               <li key={p.id}>
                 <a href={`#/person/${p.id}`} className="person">
                   <Avatar p={p} size={48} />
                   <div className="grow">
                     <div className="person-name">{p.name}{p.id === me.partner_id && <span className="pill soft">your partner 💕</span>}</div>
-                    <div className="tiny muted">
-                      {items.length} {items.length === 1 ? 'idea' : 'ideas'} · {open} still available
-                      {mineFor > 0 && <> · <strong className="green">you've got {mineFor}</strong></>}
-                    </div>
+                    <div className="tiny muted">{items.length} {items.length === 1 ? 'idea' : 'ideas'} · {open} still available</div>
                   </div>
+                  {mineFor ? (
+                    <div className="my-tally">
+                      <strong>🎁 {mineFor.count}</strong>
+                      <span>{money(mineFor.total)}</span>
+                    </div>
+                  ) : <span className="my-tally none">—</span>}
                   <span className="chev">›</span>
                 </a>
               </li>
             );
           })}
         </ul>
+        {others.length > 0 && <p className="tiny muted center">🎁 = gifts you've got for them · $ = what you've spent</p>}
       </section>
-      {myClaims.length > 0 && <MyShopping ctx={ctx} />}
       {others.length > 0 && <section className="card"><h2>Invite more family</h2><ShareLink /></section>}
     </>
   );
 }
 
-function MyShopping({ ctx }) {
-  const { uid, d, byId } = ctx;
-  const mine = d.claims.filter((c) => c.claimer_id === uid);
+function AmountEditor({ claim, ctx }) {
+  const { load, flash } = ctx;
+  const [editing, setEditing] = useState(false);
+  const [v, setV] = useState(claim.amount ?? '');
+  async function save(e) {
+    e.preventDefault();
+    const n = parsePrice(v);
+    await supabase.from('claims').update({ amount: v === '' ? null : n }).eq('id', claim.id);
+    setEditing(false); flash('Saved'); load();
+  }
+  if (editing) {
+    return (
+      <form className="row gap" onSubmit={save}>
+        <input className="amount-input" inputMode="decimal" placeholder="$" value={v} onChange={(e) => setV(e.target.value)} autoFocus />
+        <button className="btn sm primary">Save</button>
+      </form>
+    );
+  }
   return (
-    <section className="card">
-      <h2>My shopping list 🛍️</h2>
-      <ul className="plain">
-        {mine.map((c) => {
-          const item = d.items.find((i) => i.id === c.item_id);
-          return (
-            <li key={c.id} className="row between">
-              <span>{item ? item.title : c.note || 'Something special'}{c.kind === 'split' && <span className="pill soft">chipping in</span>}</span>
-              <a href={`#/person/${c.recipient_id}`} className="tiny">for {first(byId[c.recipient_id]?.name)}</a>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+    <button className="amount" onClick={() => setEditing(true)} title="Tap to enter what you actually paid">
+      {claim.cost.unknown ? <span className="muted">+ add price</span> : <>{claim.cost.estimated ? '~' : ''}{money(claim.cost.value)}</>}
+      <span className="pencil">✎</span>
+    </button>
+  );
+}
+
+function MyShoppingPage({ ctx }) {
+  const { d, byId } = ctx;
+  const { per, total, mine } = shoppingStats(ctx);
+  const ids = Object.keys(per).sort((a, b) => per[b].total - per[a].total);
+  return (
+    <>
+      <a href="#/family" className="back">‹ Family</a>
+      <BudgetSummary ctx={ctx} full />
+      {mine.length === 0 && <section className="card"><p className="muted">You haven't claimed anything yet. Head to Family to start shopping!</p></section>}
+      {ids.map((rid) => {
+        const p = byId[rid];
+        return (
+          <section key={rid} className="card">
+            <div className="row between">
+              <a href={`#/person/${rid}`} className="row gap plain-link"><Avatar p={p} size={36} /><h2 style={{ margin: 0 }}>{p?.name}</h2></a>
+              <div className="subtotal">{per[rid].count} · <strong>{money(per[rid].total)}</strong></div>
+            </div>
+            <ul className="shop-list">
+              {per[rid].claims.map((c) => {
+                const item = d.items.find((i) => i.id === c.item_id);
+                return (
+                  <li key={c.id}>
+                    <div className="grow">
+                      <div className="shop-title">{item ? item.title : c.note || 'Something special'}</div>
+                      <div className="tiny muted">
+                        {c.kind === 'split' ? '🤝 chipping in' : item ? 'from their list' : 'off-list'}
+                        {item?.price && ` · listed ${item.price}`}
+                      </div>
+                    </div>
+                    <AmountEditor claim={c} ctx={ctx} />
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
+      {mine.length > 0 && (
+        <p className="trust">Total: <strong>{money(total)}</strong> across {mine.length} gifts. “~” means an estimate (your share of a chip-in). Tap any amount to enter what you really paid.</p>
+      )}
+    </>
   );
 }
 
@@ -563,6 +710,7 @@ function PersonPage({ ctx, person }) {
   items.sort((a, b) => b.favorite - a.favorite);
   const offList = d.claims.filter((c) => c.recipient_id === person.id && !c.item_id);
   const [offNote, setOffNote] = useState('');
+  const [offPrice, setOffPrice] = useState('');
   const [busy, setBusy] = useState(false);
   const name = first(person.name);
   const sizes = [['Tops', person.tops], ['Bottoms', person.bottoms], ['Shoes', person.shoes]].filter(([, v]) => v);
@@ -582,8 +730,8 @@ function PersonPage({ ctx, person }) {
   async function addOffList(e) {
     e.preventDefault();
     if (!offNote.trim()) return;
-    const { error } = await supabase.from('claims').insert({ item_id: null, recipient_id: person.id, kind: 'full', note: offNote.trim() });
-    if (error) alert(error.message); else { setOffNote(''); flash('🎁 Noted! Only other shoppers can see this.'); load(); }
+    const { error } = await supabase.from('claims').insert({ item_id: null, recipient_id: person.id, kind: 'full', note: offNote.trim(), amount: parsePrice(offPrice) });
+    if (error) alert(error.message); else { setOffNote(''); setOffPrice(''); flash('🎁 Noted! Only other shoppers can see this.'); load(); }
   }
 
   return (
@@ -601,6 +749,7 @@ function PersonPage({ ctx, person }) {
           <div className="sizes">{sizes.map(([k, v]) => <div key={k} className="size"><span>{k}</span><strong>{v}</strong></div>)}</div>
         )}
         {person.notes && <p className="notes">📝 {person.notes}</p>}
+        {(() => { const t = shoppingStats(ctx).per[person.id]; return t ? <a href="#/shopping" className="you-got">🎁 You've got {t.count} {t.count === 1 ? 'gift' : 'gifts'} for {name} · <strong>{money(t.total)}</strong></a> : null; })()}
       </section>
 
       <section className="card">
@@ -654,6 +803,7 @@ function PersonPage({ ctx, person }) {
         )}
         <form onSubmit={addOffList} className="row gap">
           <input className="grow" placeholder="e.g. Cozy socks from Costco" value={offNote} onChange={(e) => setOffNote(e.target.value)} />
+          <input className="amount-input" inputMode="decimal" placeholder="$" value={offPrice} onChange={(e) => setOffPrice(e.target.value)} aria-label="What you paid" />
           <button className="btn sm">Add</button>
         </form>
       </section>

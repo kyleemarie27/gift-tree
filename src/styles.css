@@ -273,3 +273,27 @@ legend { font-weight: 700; font-size: 15px; margin-bottom: 6px; padding: 0; }
 .card.drawing { text-align: center; }
 @media (max-width: 380px) { .palette { grid-template-columns: repeat(5, 1fr); } }
 .btn.full, .btn.big { white-space: normal; text-align: center; line-height: 1.25; }
+
+/* shopping & budget */
+.stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 4px 0 14px; }
+.stat { background: #fdf6ee; border-radius: 12px; padding: 10px 12px; }
+.stat span { display: block; font-size: 13px; color: var(--muted); font-weight: 700; }
+.stat strong { font-size: 22px; font-family: 'Fraunces', serif; }
+.stat:first-child strong { color: var(--green); }
+.meter { height: 12px; border-radius: 999px; background: #f1e7da; overflow: hidden; margin-bottom: 6px; }
+.meter span { display: block; height: 100%; background: linear-gradient(90deg, #3f8f5f, #2f7d4f); border-radius: 999px; transition: width .4s; }
+.meter.over span { background: linear-gradient(90deg, #d0553f, var(--red)); }
+.my-tally { display: flex; flex-direction: column; align-items: flex-end; font-size: 14px; line-height: 1.2; flex-shrink: 0; }
+.my-tally strong { color: var(--green); }
+.my-tally span { color: var(--muted); font-weight: 700; }
+.my-tally.none { color: var(--line); font-weight: 800; }
+.you-got { display: block; margin-top: 12px; background: var(--green-soft); color: var(--green); border-radius: 12px; padding: 10px 12px; text-decoration: none; font-weight: 700; }
+.shop-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.shop-list li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.shop-title { font-weight: 700; }
+.subtotal { font-size: 15px; color: var(--muted); white-space: nowrap; }
+.subtotal strong { color: var(--green); font-size: 17px; }
+.amount { border: 1.5px solid var(--line); background: #fff; border-radius: 999px; padding: 6px 12px; font-weight: 800; color: var(--green); cursor: pointer; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
+.amount .pencil { color: var(--muted); font-size: 12px; }
+.amount-input { width: 84px; flex: none; padding: 8px 10px; }
+.plain-link { text-decoration: none; color: inherit; }
