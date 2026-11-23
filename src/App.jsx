@@ -127,7 +127,13 @@ function Main({ session }) {
       supabase.from('santa_matches').select('*'),
       supabase.rpc('my_gift_count'),
     ]);
+    const santaStatus = {};
+    await Promise.all((events.data || []).map(async (ev) => {
+      const { data } = await supabase.rpc('santa_status', { ev: ev.id });
+      santaStatus[ev.id] = data || [];
+    }));
     setD({
+      santaStatus,
       profiles: profiles.data || [], items: items.data || [], claims: claims.data || [],
       events: events.data || [], members: members.data || [], matches: matches.data || [],
       giftCount: count.data || 0,
@@ -166,7 +172,9 @@ function Main({ session }) {
   let body;
   if (page === 'person' && byId[arg] && arg !== uid) body = <PersonPage ctx={ctx} person={byId[arg]} />;
   else if (page === 'family') body = <Family ctx={ctx} />;
-  else if (page === 'santa') body = <Santa ctx={ctx} />;
+  else if (page === 'santa' && arg === 'new') body = <SantaCreate ctx={ctx} />;
+  else if (page === 'santa' && arg && d.events.find((e) => e.id === arg)) body = <SantaGroup ctx={ctx} ev={d.events.find((e) => e.id === arg)} />;
+  else if (page === 'santa') body = <SantaHome ctx={ctx} />;
   else if (page === 'me') body = <MePage ctx={ctx} />;
   else body = <MyList ctx={ctx} />;
 
@@ -214,6 +222,7 @@ function MyList({ ctx }) {
 
   return (
     <>
+      <SantaBanner ctx={ctx} />
       <section className="hero card">
         <h1 className="display">Hi {first(me.name)}! 👋</h1>
         <Tree count={d.giftCount} name={first(me.name)} />
@@ -226,7 +235,7 @@ function MyList({ ctx }) {
           {!adding && <button className="btn primary" onClick={() => { setAdding(true); setEditing(null); }}>+ Add a gift</button>}
         </div>
         {adding && (
-          <ItemForm onCancel={mine.length ? () => setAdding(false) : null}
+          <ItemForm uid={uid} onCancel={mine.length ? () => setAdding(false) : null}
             onSaved={() => { setAdding(false); load(); flash('Added to your list 🎁'); }} />
         )}
         {mine.length === 0 && !adding && <p className="muted">Your list is empty — add a few ideas!</p>}
@@ -234,7 +243,7 @@ function MyList({ ctx }) {
           {mine.map((item) => (
             <li key={item.id} className="item">
               {editing === item.id ? (
-                <ItemForm item={item} onCancel={() => setEditing(null)}
+                <ItemForm uid={uid} item={item} onCancel={() => setEditing(null)}
                   onSaved={() => { setEditing(null); load(); flash('Saved'); }} />
               ) : (
                 <>
@@ -260,12 +269,37 @@ function MyList({ ctx }) {
   );
 }
 
+const SWATCHES = [
+  ['Black', '#1f1f1f'], ['White', '#ffffff'], ['Ivory', '#f3ecd8'], ['Beige', '#d9c4a3'], ['Brown', '#7a5236'],
+  ['Grey', '#9a9a9a'], ['Navy', '#1f2f57'], ['Blue', '#5b86d6'], ['Sage', '#9caf88'], ['Green', '#2f7d4f'],
+  ['Red', '#c0392b'], ['Burgundy', '#7a1f2b'], ['Pink', '#f0a8c0'], ['Lavender', '#b9a3dc'], ['Yellow', '#f2cf4a'],
+  ['Orange', '#e8843a'], ['Gold', '#d4af37'], ['Silver', '#c0c4c8'],
+];
+
+function Swatches({ colors, size = 18 }) {
+  if (!colors || !colors.length) return null;
+  return (
+    <span className="swatches" title={colors.map((c) => c.name).join(', ')}>
+      {colors.map((c) => <span key={c.hex + c.name} className="swatch" style={{ background: c.hex, width: size, height: size }} />)}
+      <span className="swatch-names">{colors.map((c) => c.name).join(' or ')}</span>
+    </span>
+  );
+}
+
 function ItemBody({ item }) {
+  const [broken, setBroken] = useState(false);
+  const tint = item.colors?.[0]?.hex;
   return (
     <div className="item-body">
-      {item.image_url
-        ? <img src={item.image_url} alt="" className="thumb" loading="lazy" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-        : <div className="thumb placeholder">🎁</div>}
+      {item.image_url && !broken ? (
+        <a href={item.url || item.image_url} target="_blank" rel="noreferrer" className="thumb-link">
+          <img src={item.image_url} alt="" className="thumb" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} />
+        </a>
+      ) : (
+        <div className="thumb placeholder" style={tint ? { background: `linear-gradient(135deg, ${tint}, ${tint}cc)` } : null}>
+          <span>🎁</span>
+        </div>
+      )}
       <div className="item-text">
         <div className="item-title">
           {item.favorite && <span title="Really want this" className="heart">❤️</span>}
@@ -276,6 +310,7 @@ function ItemBody({ item }) {
           {item.details && <span>{item.details}</span>}
           {item.url && <span className="site">{safeHost(item.url)}</span>}
         </div>
+        <Swatches colors={item.colors} />
         {item.notes && <div className="item-notes">{item.notes}</div>}
       </div>
     </div>
@@ -283,13 +318,63 @@ function ItemBody({ item }) {
 }
 function safeHost(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
 
-function ItemForm({ item, onSaved, onCancel }) {
+// Shrink phone photos before upload (keeps storage small and pages fast).
+async function shrink(file, max = 1000) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const scale = Math.min(1, max / Math.max(img.width, img.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
+  } finally { URL.revokeObjectURL(url); }
+}
+
+function ColorPicker({ value, onChange }) {
+  const [custom, setCustom] = useState('#9caf88');
+  const [customName, setCustomName] = useState('');
+  const has = (hex) => value.some((c) => c.hex === hex);
+  const toggle = (name, hex) => onChange(has(hex) ? value.filter((c) => c.hex !== hex) : [...value, { name, hex }]);
+  return (
+    <div className="field">
+      <span>Preferred colors <em>(tap any that work, or skip)</em></span>
+      <div className="palette">
+        {SWATCHES.map(([name, hex]) => (
+          <button type="button" key={hex} className={'pick' + (has(hex) ? ' on' : '')} onClick={() => toggle(name, hex)}
+            aria-pressed={has(hex)} aria-label={name} title={name}>
+            <span className="swatch" style={{ background: hex }} />
+            <span className="pick-name">{name}</span>
+          </button>
+        ))}
+      </div>
+      <div className="custom-color">
+        <input type="color" value={custom} onChange={(e) => setCustom(e.target.value)} aria-label="Custom color" />
+        <input placeholder="Name it (e.g. Dusty rose)" value={customName} onChange={(e) => setCustomName(e.target.value)} />
+        <button type="button" className="btn sm" onClick={() => { if (!has(custom)) onChange([...value, { name: customName.trim() || 'Custom', hex: custom }]); setCustomName(''); }}>Add</button>
+      </div>
+      {value.length > 0 && (
+        <div className="chosen">
+          {value.map((c) => (
+            <span key={c.hex} className="chip on static"><span className="swatch" style={{ background: c.hex }} />{c.name}
+              <button type="button" className="x" onClick={() => onChange(value.filter((x) => x.hex !== c.hex))} aria-label={`Remove ${c.name}`}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ItemForm({ item, uid, onSaved, onCancel }) {
   const [f, setF] = useState({
-    url: item?.url || '', title: item?.title || '', price: item?.price || '',
-    details: item?.details || '', notes: item?.notes || '', image_url: item?.image_url || '', favorite: item?.favorite || false,
+    url: item?.url || '', title: item?.title || '', price: item?.price || '', details: item?.details || '',
+    notes: item?.notes || '', image_url: item?.image_url || '', favorite: item?.favorite || false, colors: item?.colors || [],
   });
   const [fetching, setFetching] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showImgUrl, setShowImgUrl] = useState(false);
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
 
   async function fetchPreview(url) {
@@ -298,14 +383,25 @@ function ItemForm({ item, onSaved, onCancel }) {
     try {
       const r = await fetch('/api/preview?url=' + encodeURIComponent(url));
       const p = await r.json();
-      setF((s) => ({
-        ...s,
-        title: s.title || p.title || '',
-        price: s.price || p.price || '',
-        image_url: p.image || s.image_url,
-      }));
+      setF((s) => ({ ...s, title: s.title || p.title || '', price: s.price || p.price || '', image_url: s.image_url || p.image || '' }));
     } catch { /* fine — fill it in by hand */ }
     setFetching(false);
+  }
+
+  async function upload(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploading(true);
+    try {
+      const blob = await shrink(file);
+      const path = `${uid}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+      const { error } = await supabase.storage.from('gift-photos').upload(path, blob, { contentType: 'image/jpeg' });
+      if (error) throw error;
+      const { data } = supabase.storage.from('gift-photos').getPublicUrl(path);
+      setF((s) => ({ ...s, image_url: data.publicUrl }));
+    } catch (err) { alert('Could not upload that photo: ' + (err.message || err)); }
+    setUploading(false);
   }
 
   async function save(e) {
@@ -323,42 +419,50 @@ function ItemForm({ item, onSaved, onCancel }) {
   return (
     <form className="item-form stack" onSubmit={save}>
       <label className="field">
-        <span>Link <em>(optional — paste and we'll fill in the rest)</em></span>
+        <span>Link <em>(paste one and we'll grab the photo &amp; price)</em></span>
         <input type="url" inputMode="url" placeholder="https://…" value={f.url}
           onChange={set('url')}
           onPaste={(e) => { const v = e.clipboardData.getData('text'); setTimeout(() => fetchPreview(v.trim()), 0); }}
-          onBlur={() => !f.title && fetchPreview(f.url.trim())} />
+          onBlur={() => (!f.title || !f.image_url) && fetchPreview(f.url.trim())} />
       </label>
       {fetching && <p className="tiny muted">Looking that up… ✨</p>}
-      {f.image_url && (
-        <div className="preview-img">
-          <img src={f.image_url} alt="" referrerPolicy="no-referrer" onError={() => setF((s) => ({ ...s, image_url: '' }))} />
-          <button type="button" className="link tiny" onClick={() => setF((s) => ({ ...s, image_url: '' }))}>remove photo</button>
+
+      <div className="photo-row">
+        <div className="photo-box">
+          {f.image_url
+            ? <img src={f.image_url} alt="" referrerPolicy="no-referrer" onError={() => setF((s) => ({ ...s, image_url: '' }))} />
+            : <span className="photo-empty">{uploading ? '⏳' : '📷'}</span>}
         </div>
-      )}
+        <div className="photo-actions">
+          <label className="btn sm">
+            {uploading ? 'Uploading…' : f.image_url ? 'Change photo' : 'Upload a photo'}
+            <input type="file" accept="image/*" hidden onChange={upload} disabled={uploading} />
+          </label>
+          {!showImgUrl && <button type="button" className="link tiny" onClick={() => setShowImgUrl(true)}>or paste an image link</button>}
+          {showImgUrl && <input className="sm-wide" placeholder="https://…/photo.jpg" value={f.image_url} onChange={set('image_url')} />}
+          {f.image_url && <button type="button" className="link tiny" onClick={() => setF((s) => ({ ...s, image_url: '' }))}>remove photo</button>}
+          <span className="tiny muted">A screenshot works great!</span>
+        </div>
+      </div>
+
       <label className="field">
         <span>What is it?</span>
         <input required placeholder="e.g. Big cozy scarf, or “a surprise!”" value={f.title} onChange={set('title')} />
       </label>
       <div className="two">
-        <label className="field">
-          <span>Price</span>
-          <input placeholder="$80" value={f.price} onChange={set('price')} />
-        </label>
-        <label className="field">
-          <span>Size / color</span>
-          <input placeholder="M, ivory" value={f.details} onChange={set('details')} />
-        </label>
+        <label className="field"><span>Price</span><input placeholder="$80" value={f.price} onChange={set('price')} /></label>
+        <label className="field"><span>Size / model</span><input placeholder="M, 11th gen…" value={f.details} onChange={set('details')} /></label>
       </div>
+      <ColorPicker value={f.colors} onChange={(colors) => setF((s) => ({ ...s, colors }))} />
       <label className="field">
         <span>Notes</span>
-        <input placeholder="Any brand is fine, the green one, etc." value={f.notes} onChange={set('notes')} />
+        <input placeholder="Any brand is fine, the bigger one, etc." value={f.notes} onChange={set('notes')} />
       </label>
       <label className="check">
         <input type="checkbox" checked={f.favorite} onChange={set('favorite')} /> ❤️ I really, really want this one
       </label>
       <div className="row gap">
-        <button className="btn primary" disabled={saving}>{saving ? 'Saving…' : item ? 'Save' : 'Add to my list'}</button>
+        <button className="btn primary" disabled={saving || uploading}>{saving ? 'Saving…' : item ? 'Save' : 'Add to my list'}</button>
         {onCancel && <button type="button" className="btn ghost" onClick={onCancel}>Cancel</button>}
       </div>
     </form>
@@ -634,168 +738,317 @@ function ProfileForm({ ctx, onDone, firstTime }) {
 
 /* ───────────────────────── secret santa ───────────────────────── */
 
-function Santa({ ctx }) {
+const fmtWhen = (ts) => ts ? new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+const fmtDate = (d) => {
+  if (!d) return '';
+  const dt = new Date(d + 'T12:00:00');
+  return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+};
+
+function santaInfo(ctx, ev) {
+  const { uid, d, byId } = ctx;
+  const members = d.members.filter((m) => m.event_id === ev.id).map((m) => byId[m.profile_id]).filter(Boolean);
+  const status = d.santaStatus[ev.id] || [];
+  const assigned = status.filter((s) => s.assigned).length;
+  const seen = status.filter((s) => s.seen).length;
+  const myMatch = d.matches.find((m) => m.event_id === ev.id && m.giver_id === uid);
+  return { members, status, assigned, seen, myMatch, isIn: members.some((m) => m.id === uid), isOrganizer: ev.created_by === uid };
+}
+
+function shareSanta(ev, n) {
+  const url = window.location.origin;
+  const bits = [ev.budget && `Limit: ${ev.budget}`, ev.exchange_date && `Exchange: ${fmtDate(ev.exchange_date)}`].filter(Boolean).join(' · ');
+  const text = ev.drawn_at
+    ? `🎅 Names are drawn for ${ev.name}! All ${n} of us have been assigned someone. Open Gift Tree to see who you got (shh 🤫). ${bits}`
+    : `🎅 You're in ${ev.name}! Names will be drawn soon. Make sure your Gift Tree list is up to date. ${bits}`;
+  if (navigator.share) return navigator.share({ title: ev.name, text, url }).catch(() => {});
+  navigator.clipboard?.writeText(text + ' ' + url);
+  alert('Message copied! Paste it in the family group chat.');
+}
+
+function AvatarStack({ people, size = 30 }) {
+  return (
+    <span className="avatar-stack">
+      {people.slice(0, 6).map((p) => <Avatar key={p.id} p={p} size={size} />)}
+      {people.length > 6 && <span className="more">+{people.length - 6}</span>}
+    </span>
+  );
+}
+
+// Home-screen nudge when you've been assigned but haven't looked yet.
+function SantaBanner({ ctx }) {
   const { d } = ctx;
-  const [creating, setCreating] = useState(d.events.length === 0);
+  const unseen = d.events.filter((ev) => ev.drawn_at && d.matches.some((m) => m.event_id === ev.id && !m.seen_at));
+  if (!unseen.length) return null;
+  const ev = unseen[0];
+  return (
+    <a href={`#/santa/${ev.id}`} className="santa-banner">
+      <span className="big-emoji">🎅</span>
+      <span><strong>Names are drawn for {ev.name}!</strong><br />Tap to see who you got →</span>
+    </a>
+  );
+}
+
+function SantaHome({ ctx }) {
+  const { d } = ctx;
   return (
     <>
       <section className="card">
-        <div className="row between">
-          <h1 className="display">Secret Santa 🎅</h1>
-          {!creating && <button className="btn sm" onClick={() => setCreating(true)}>+ New</button>}
-        </div>
-        {creating && <SantaCreate ctx={ctx} onDone={() => setCreating(false)} onCancel={d.events.length ? () => setCreating(false) : null} />}
-        {!creating && d.events.length === 0 && <p className="muted">No Secret Santa yet.</p>}
+        <h1 className="display">Secret Santa 🎅</h1>
+        <ol className="how">
+          <li><span>1</span><div><strong>Start a group</strong><br /><em>Pick who's in, set a spending limit and a date.</em></div></li>
+          <li><span>2</span><div><strong>Draw names</strong><br /><em>The app shuffles everyone. Couples never draw each other.</em></div></li>
+          <li><span>3</span><div><strong>Everyone opens their match</strong><br /><em>You only ever see who <u>you</u> got. Nobody sees the whole list.</em></div></li>
+        </ol>
+        <a href="#/santa/new" className="btn primary big">+ Start a Secret Santa</a>
       </section>
-      {d.events.map((ev) => <SantaEvent key={ev.id} ctx={ctx} ev={ev} />)}
+      {d.events.map((ev) => {
+        const s = santaInfo(ctx, ev);
+        return (
+          <a key={ev.id} href={`#/santa/${ev.id}`} className="card group-card">
+            <div className="row between">
+              <h2>{ev.name}</h2>
+              <span className="chev">›</span>
+            </div>
+            <AvatarStack people={s.members} />
+            <div className="group-meta">
+              {ev.budget && <span>💸 {ev.budget}</span>}
+              {ev.exchange_date && <span>📅 {fmtDate(ev.exchange_date)}</span>}
+              <span>👥 {s.members.length} people</span>
+            </div>
+            <div className="group-status">
+              {!ev.drawn_at
+                ? <span className="pill">⏳ Waiting for names to be drawn</span>
+                : <span className="pill claimed">✓ All {s.assigned} assigned · {s.seen} of {s.members.length} opened</span>}
+              {s.myMatch && !s.myMatch.seen_at && <span className="pill mine">🎁 Your match is waiting!</span>}
+            </div>
+          </a>
+        );
+      })}
     </>
   );
 }
 
-function SantaCreate({ ctx, onDone, onCancel }) {
-  const { uid, d, load, flash } = ctx;
+function SantaCreate({ ctx }) {
+  const { uid, d, byId, load, flash } = ctx;
   const people = d.profiles.filter((p) => p.name);
   const [name, setName] = useState('Sibling Secret Santa');
   const [budget, setBudget] = useState('');
+  const [date, setDate] = useState('');
   const [sel, setSel] = useState(new Set([uid]));
+  const [saving, setSaving] = useState(false);
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const chosen = people.filter((p) => sel.has(p.id));
+  const couples = chosen.filter((p) => p.partner_id && sel.has(p.partner_id) && p.id < p.partner_id)
+    .map((p) => `${first(p.name)} & ${first(byId[p.partner_id].name)}`);
 
   async function create(e) {
     e.preventDefault();
-    const { data: ev, error } = await supabase.from('santa_events').insert({ name, budget }).select().single();
-    if (error) return alert(error.message);
-    if (sel.size) await supabase.from('santa_members').insert([...sel].map((profile_id) => ({ event_id: ev.id, profile_id })));
-    await load(); flash('Secret Santa created 🎅'); onDone();
+    if (sel.size < 3) return alert('Pick at least 3 people.');
+    setSaving(true);
+    const { data: ev, error } = await supabase.from('santa_events').insert({ name: name.trim() || 'Secret Santa', budget, exchange_date: date }).select().single();
+    if (error) { setSaving(false); return alert(error.message); }
+    await supabase.from('santa_members').insert([...sel].map((profile_id) => ({ event_id: ev.id, profile_id })));
+    await load(); setSaving(false); flash('Group created 🎅');
+    go('santa/' + ev.id);
   }
 
   return (
-    <form className="stack" onSubmit={create}>
-      <div className="two">
-        <label className="field"><span>Name</span><input value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <label className="field"><span>Spending limit</span><input placeholder="$100" value={budget} onChange={(e) => setBudget(e.target.value)} /></label>
-      </div>
-      <div className="field">
-        <span>Who's in?</span>
-        <div className="chips">
-          {people.map((p) => (
-            <button type="button" key={p.id} className={'chip' + (sel.has(p.id) ? ' on' : '')} onClick={() => toggle(p.id)}>
-              {sel.has(p.id) ? '✓ ' : ''}{p.name}
-            </button>
-          ))}
+    <>
+      <a href="#/santa" className="back">‹ Secret Santa</a>
+      <form className="card stack" onSubmit={create}>
+        <h1 className="display sm">Start a Secret Santa</h1>
+        <label className="field"><span>Group name</span><input value={name} onChange={(e) => setName(e.target.value)} /></label>
+        <div className="two">
+          <label className="field"><span>Spending limit</span><input placeholder="$100" value={budget} onChange={(e) => setBudget(e.target.value)} /></label>
+          <label className="field"><span>Gift exchange</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
         </div>
-        <em className="tiny muted">You can add people later, until names are drawn.</em>
-      </div>
-      <div className="row gap">
-        <button className="btn primary">Create</button>
-        {onCancel && <button type="button" className="btn ghost" onClick={onCancel}>Cancel</button>}
-      </div>
-    </form>
+        <div className="field">
+          <span>Who's in? <em>({sel.size} picked)</em></span>
+          <div className="pick-people">
+            {people.map((p) => (
+              <button type="button" key={p.id} className={'pick-person' + (sel.has(p.id) ? ' on' : '')} onClick={() => toggle(p.id)} aria-pressed={sel.has(p.id)}>
+                <Avatar p={p} size={36} />
+                <span>{p.name}{p.id === uid && ' (you)'}</span>
+                <span className="tick">{sel.has(p.id) ? '✓' : ''}</span>
+              </button>
+            ))}
+          </div>
+          <em className="tiny muted">Don't see someone? They need to sign in to Gift Tree once first.</em>
+        </div>
+        {couples.length > 0 && <p className="note-box">💕 {couples.join(', ')} won't draw each other.</p>}
+        <button className="btn primary big" disabled={saving}>{saving ? 'Creating…' : 'Create group'}</button>
+        <p className="tiny muted center">You'll be the organizer. Names aren't drawn until you press the button.</p>
+      </form>
+    </>
   );
 }
 
-function SantaEvent({ ctx, ev }) {
-  const { uid, d, byId, load, flash } = ctx;
-  const members = d.members.filter((m) => m.event_id === ev.id).map((m) => byId[m.profile_id]).filter(Boolean);
-  const memberIds = new Set(members.map((m) => m.id));
-  const match = d.matches.find((m) => m.event_id === ev.id && m.giver_id === uid);
-  const receiver = match && byId[match.receiver_id];
-  const isOrganizer = ev.created_by === uid;
-  const [reveal, setReveal] = useState(false);
-  const [editBudget, setEditBudget] = useState(false);
-  const [budget, setBudget] = useState(ev.budget || '');
-  const [drawing, setDrawing] = useState(false);
-  const notIn = d.profiles.filter((p) => p.name && !memberIds.has(p.id));
+function Step({ n, done, active, title, children }) {
+  return (
+    <li className={'step' + (done ? ' done' : '') + (active ? ' active' : '')}>
+      <span className="dot">{done ? '✓' : n}</span>
+      <div><strong>{title}</strong>{children && <div className="tiny muted">{children}</div>}</div>
+    </li>
+  );
+}
 
+function SantaGroup({ ctx, ev }) {
+  const { uid, d, byId, load, flash } = ctx;
+  const { members, status, assigned, seen, myMatch, isIn, isOrganizer } = santaInfo(ctx, ev);
+  const receiver = myMatch && byId[myMatch.receiver_id];
+  const organizer = byId[ev.created_by];
+  const [open, setOpen] = useState(false);
+  const [drawing, setDrawing] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [budget, setBudget] = useState(ev.budget || '');
+  const [date, setDate] = useState(ev.exchange_date || '');
+  const statusOf = (id) => status.find((s) => s.profile_id === id) || {};
+  const notIn = d.profiles.filter((p) => p.name && !members.some((m) => m.id === p.id));
+  const allSeen = ev.drawn_at && seen === members.length;
+
+  async function reveal() {
+    setOpen(true);
+    if (!myMatch.seen_at) { await supabase.rpc('mark_santa_seen', { ev: ev.id }); load(); }
+  }
   async function draw() {
-    if (!confirm(`Draw names for ${members.length} people? Everyone will be able to see who they got (and only who they got).`)) return;
+    if (!confirm(`Draw names for all ${members.length} people now?\n\nEveryone gets one person. You'll only see who YOU got.`)) return;
     setDrawing(true);
     const { error } = await supabase.rpc('draw_santa', { ev: ev.id });
-    await new Promise((r) => setTimeout(r, 1200)); // a little suspense
+    await new Promise((r) => setTimeout(r, 1500)); // a little suspense
     setDrawing(false);
     if (error) return alert(error.message);
-    await load(); flash('🎩 Names drawn!');
+    await load(); flash(`🎩 Done! All ${members.length} people have a match.`);
   }
-  async function reset() {
-    if (!confirm('Re-open this Secret Santa? This throws out the current draw — everyone will get a new name when you draw again.')) return;
+  async function redraw() {
+    if (!confirm('Start over?\n\nThis throws out everyone\'s match. People who already looked will get a NEW person when you draw again.')) return;
     const { error } = await supabase.rpc('reset_santa', { ev: ev.id });
     if (error) return alert(error.message);
     load();
   }
+  async function saveDetails() {
+    await supabase.from('santa_events').update({ budget, exchange_date: date }).eq('id', ev.id);
+    setEditing(false); load();
+  }
   async function add(id) { await supabase.from('santa_members').insert({ event_id: ev.id, profile_id: id }); load(); }
   async function removeM(id) { await supabase.from('santa_members').delete().eq('event_id', ev.id).eq('profile_id', id); load(); }
-  async function saveBudget() { await supabase.from('santa_events').update({ budget }).eq('id', ev.id); setEditBudget(false); load(); }
   async function del() {
-    if (!confirm(`Delete "${ev.name}" entirely?`)) return;
-    await supabase.from('santa_events').delete().eq('id', ev.id); load();
+    if (!confirm(`Delete "${ev.name}"? This can't be undone.`)) return;
+    await supabase.from('santa_events').delete().eq('id', ev.id); await load(); go('santa');
   }
 
   return (
-    <section className="card santa">
-      <div className="row between">
-        <h2>{ev.name}</h2>
-        {ev.drawn_at ? <span className="pill claimed">Names drawn ✓</span> : <span className="pill">Open</span>}
-      </div>
-      <div className="budget">
-        💸 Spending limit:{' '}
-        {editBudget ? (
-          <span className="row gap inline">
-            <input value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="$100" className="sm-input" />
-            <button className="btn sm" onClick={saveBudget}>Save</button>
-          </span>
-        ) : (
-          <>
-            <strong>{ev.budget || 'not set'}</strong>{' '}
-            <button className="link tiny" onClick={() => setEditBudget(true)}>change</button>
-          </>
-        )}
-      </div>
+    <>
+      <a href="#/santa" className="back">‹ Secret Santa</a>
 
-      {ev.drawn_at && memberIds.has(uid) && receiver && (
-        <div className={'match' + (reveal ? ' open' : '')}>
-          {!reveal ? (
-            <button className="hat" onClick={() => setReveal(true)}>
-              <span className="big-emoji">🎩</span>
-              <span>Tap to see who you got!</span>
+      <section className="card">
+        <h1 className="display sm">{ev.name}</h1>
+        {editing ? (
+          <div className="two" style={{ marginTop: 10 }}>
+            <label className="field"><span>Spending limit</span><input value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="$100" /></label>
+            <label className="field"><span>Gift exchange</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+            <div className="row gap"><button className="btn sm primary" onClick={saveDetails}>Save</button><button className="btn sm ghost" onClick={() => setEditing(false)}>Cancel</button></div>
+          </div>
+        ) : (
+          <div className="group-meta big">
+            <span>💸 <strong>{ev.budget || 'No limit set'}</strong></span>
+            {ev.exchange_date && <span>📅 <strong>{fmtDate(ev.exchange_date)}</strong></span>}
+            <span>👤 Organized by {organizer ? first(organizer.name) : '…'}</span>
+            {isOrganizer && <button className="link tiny" onClick={() => setEditing(true)}>edit</button>}
+          </div>
+        )}
+
+        <ol className="steps">
+          <Step n={1} done title={`Group set up · ${members.length} people`} />
+          <Step n={2} done={!!ev.drawn_at} active={!ev.drawn_at}
+            title={ev.drawn_at ? `Names drawn · all ${assigned} assigned` : 'Draw names'}>
+            {ev.drawn_at
+              ? `Drawn by ${first(byId[ev.drawn_by]?.name || organizer?.name)} · ${fmtWhen(ev.drawn_at)}`
+              : isOrganizer ? 'Press the button below when everyone is in.' : `Waiting for ${first(organizer?.name)} to draw.`}
+          </Step>
+          <Step n={3} done={allSeen} active={!!ev.drawn_at && !allSeen}
+            title={ev.drawn_at ? `${seen} of ${members.length} have opened their match` : 'Everyone opens their match'} />
+        </ol>
+      </section>
+
+      {ev.drawn_at && isIn && receiver && (
+        <section className={'envelope' + (open ? ' open' : '')}>
+          {!open ? (
+            <button className="envelope-btn" onClick={reveal}>
+              <span className="seal">🎅</span>
+              <span className="env-title">{myMatch.seen_at ? 'Your match' : 'You have a match!'}</span>
+              <span className="env-sub">{myMatch.seen_at ? 'Tap to see again' : 'Tap to open. Make sure nobody\'s peeking!'}</span>
             </button>
           ) : (
             <div className="reveal">
               <div className="tiny muted">You're Secret Santa for…</div>
-              <Avatar p={receiver} size={64} />
-              <div className="display sm">{receiver.name}!</div>
-              <a className="btn primary" href={`#/person/${receiver.id}`}>See {possessive(first(receiver.name))} list</a>
-              <button className="link tiny" onClick={() => setReveal(false)}>hide</button>
+              <Avatar p={receiver} size={72} />
+              <div className="display">{receiver.name}!</div>
+              {ev.budget && <div className="tiny">Spending limit: <strong>{ev.budget}</strong></div>}
+              <a className="btn primary" href={`#/person/${receiver.id}`}>See {possessive(first(receiver.name))} list →</a>
+              <button className="link tiny" onClick={() => setOpen(false)}>hide</button>
             </div>
           )}
-        </div>
+        </section>
       )}
-      {drawing && <div className="drawing"><span className="big-emoji shake">🎩</span> Shuffling names…</div>}
+      {ev.drawn_at && !isIn && <section className="card"><p className="muted">You're not part of this group, but you can follow along.</p></section>}
 
-      <div className="field">
-        <span>{members.length} in the hat</span>
-        <div className="chips">
-          {members.map((p) => (
-            <span key={p.id} className="chip on static">
-              {p.name}
-              {!ev.drawn_at && <button className="x" onClick={() => removeM(p.id)} aria-label={`Remove ${p.name}`}>×</button>}
-            </span>
-          ))}
-        </div>
-      </div>
-      {!ev.drawn_at && notIn.length > 0 && (
-        <div className="field">
-          <span className="tiny muted">Add someone</span>
-          <div className="chips">
-            {notIn.map((p) => <button key={p.id} className="chip" onClick={() => add(p.id)}>+ {p.name}</button>)}
+      {drawing && <div className="card drawing"><span className="big-emoji shake">🎩</span><div>Shuffling {members.length} names…</div></div>}
+
+      <section className="card">
+        <h2>Who's in</h2>
+        <ul className="roster">
+          {members.map((p) => {
+            const s = statusOf(p.id);
+            const partner = p.partner_id && members.some((m) => m.id === p.partner_id) ? byId[p.partner_id] : null;
+            return (
+              <li key={p.id}>
+                <Avatar p={p} size={40} />
+                <div className="grow">
+                  <div className="person-name sm">{p.name}{p.id === uid && <span className="tiny muted"> (you)</span>}</div>
+                  {partner && <div className="tiny muted">💕 won't get {first(partner.name)}</div>}
+                </div>
+                {!ev.drawn_at && (isOrganizer && p.id !== uid
+                  ? <button className="link tiny" onClick={() => removeM(p.id)}>remove</button>
+                  : <span className="pill">In the hat</span>)}
+                {ev.drawn_at && (
+                  <div className="roster-status">
+                    <span className={'pill ' + (s.assigned ? 'claimed' : '')}>{s.assigned ? '✓ Assigned' : '—'}</span>
+                    <span className={'pill ' + (s.seen ? 'claimed' : '')}>{s.seen ? '👀 Opened' : 'Not opened'}</span>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        {!ev.drawn_at && isOrganizer && notIn.length > 0 && (
+          <div className="field" style={{ marginTop: 12 }}>
+            <span className="tiny muted">Add someone</span>
+            <div className="chips">{notIn.map((p) => <button key={p.id} className="chip" onClick={() => add(p.id)}>+ {p.name}</button>)}</div>
           </div>
-        </div>
+        )}
+      </section>
+
+      {isOrganizer && (
+        <section className="card stack">
+          <h2>Organizer</h2>
+          {!ev.drawn_at ? (
+            <>
+              <button className="btn primary big" disabled={members.length < 3 || drawing} onClick={draw}>🎩 Draw names for all {members.length}</button>
+              {members.length < 3 && <p className="tiny muted">Need at least 3 people.</p>}
+              <button className="btn full" onClick={() => shareSanta(ev, members.length)}>💬 Tell the group they're in</button>
+            </>
+          ) : (
+            <>
+              <button className="btn primary full" onClick={() => shareSanta(ev, members.length)}>💬 Let everyone know names are drawn</button>
+              <button className="btn ghost full" onClick={redraw}>Start over & redraw</button>
+            </>
+          )}
+          <button className="link tiny" onClick={del}>Delete this group</button>
+        </section>
       )}
-      <div className="row gap wrap">
-        {!ev.drawn_at && <button className="btn primary" disabled={members.length < 3 || drawing} onClick={draw}>🎩 Draw names</button>}
-        {ev.drawn_at && isOrganizer && <button className="btn ghost sm" onClick={reset}>Re-open & redraw</button>}
-        {isOrganizer && <button className="btn ghost sm" onClick={del}>Delete</button>}
-      </div>
-      {!ev.drawn_at && members.length < 3 && <p className="tiny muted">Need at least 3 people.</p>}
-      <p className="tiny muted">Partners are never matched with each other. Nobody, not even the organizer, can see the full list of pairs.</p>
-    </section>
+
+      <p className="trust">🔒 The app picks names at random. Couples are never matched. Nobody, not even the organizer, can see who has whom.</p>
+    </>
   );
 }

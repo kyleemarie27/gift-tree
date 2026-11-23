@@ -80,8 +80,18 @@ export default async function handler(req, res) {
     let price = ld.price || meta(html, ['product:price:amount', 'og:price:amount', 'price']);
     const currency = ld.currency || meta(html, ['product:price:currency', 'og:price:currency', 'priceCurrency']);
 
-    if (image && image.startsWith('//')) image = 'https:' + image;
-    if (image && image.startsWith('/')) image = target.origin + image;
+    // Shopify stores (most DTC brands) expose clean product JSON at <product-url>.js
+    if ((!price || !image) && /\/products\//.test(target.pathname) && /shopify/i.test(html)) {
+      try {
+        const base = new URL(r.url || target.toString());
+        const j = await (await fetch(base.origin + base.pathname.replace(/\/$/, '') + '.js', { headers: { 'user-agent': UA } })).json();
+        title = title || j.title || '';
+        image = image || j.featured_image || '';
+        if (!price && j.price) price = String(j.price / 100);
+      } catch { /* not shopify after all */ }
+    }
+    if (image) { try { image = new URL(image.replace(/^https?:(?!\/\/)/, ''), r.url || target).href; } catch { image = ''; } }
+    if (/logo/i.test(image)) image = '';
     if (price && /^[\d.,]+$/.test(price)) {
       const n = Number(price.replace(/,/g, ''));
       price = (currency && currency !== 'USD' ? currency + ' ' : '$') + (Number.isFinite(n) ? Math.round(n) : price);

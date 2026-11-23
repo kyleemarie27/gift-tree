@@ -12,31 +12,32 @@ const db = {
     P('geo', 'Geoff', { partner_id: 'deb' }),
   ],
   items: [
-    { id: 'i1', owner_id: 'me', title: 'Big scarf', url: 'https://www.acnestudios.com', price: '$80', details: 'Oatmeal', notes: '', favorite: true },
-    { id: 'i2', owner_id: 'me', title: 'Travel jewelry organizer', url: 'https://www.awaytravel.com', price: '$70', details: '', notes: '', favorite: false },
-    { id: 'i3', owner_id: 'me', title: 'Saute pan', url: 'https://www.carawayhome.com', price: '$165', details: 'Green', notes: '', favorite: false },
+    { id: 'i1', owner_id: 'me', title: 'Big scarf', url: 'https://www.acnestudios.com', price: '$80', details: 'Oversized', notes: '', favorite: true, colors: [{ name: 'Ivory', hex: '#f3ecd8' },{ name: 'Beige', hex: '#d9c4a3' }] },
+    { id: 'i2', owner_id: 'me', title: 'Travel jewelry organizer', url: 'https://www.awaytravel.com', price: '$70', details: '', notes: '', favorite: false, colors: [{ name: 'Navy', hex: '#1f2f57' }] },
+    { id: 'i3', owner_id: 'me', title: 'Sauté Pan', url: 'https://www.carawayhome.com/products/saute-pan', image_url: 'https://cdn.shopify.com/s/files/1/0258/6273/3906/files/saute-pan_cream_hero.jpg?v=1785827494', price: '$165', details: '', notes: '', favorite: false, colors: [{ name: 'Sage', hex: '#9caf88' },{ name: 'Cream', hex: '#efe6d2' }] },
     { id: 'i4', owner_id: 'me', title: 'A surprise something you think I’d like!', url: '', price: '', details: '', notes: '', favorite: false },
     { id: 'c1', owner_id: 'col', title: 'Waterproof fly box', url: 'https://www.orvis.com', price: '$45', details: '', notes: 'The clear one', favorite: true },
-    { id: 'c2', owner_id: 'col', title: 'Merino base layer', url: '', price: '$110', details: 'L, charcoal', notes: '', favorite: false },
+    { id: 'c2', owner_id: 'col', title: 'Merino base layer', url: '', price: '$110', details: 'L', notes: '', favorite: false, colors: [{ name: 'Grey', hex: '#9a9a9a' },{ name: 'Black', hex: '#1f1f1f' }] },
     { id: 'c3', owner_id: 'col', title: 'Grill brush', url: '', price: '$25', details: '', notes: '', favorite: false },
-    { id: 'k1', owner_id: 'kat', title: 'Silk pillowcase', url: '', price: '$89', details: 'Blush', notes: '', favorite: true },
+    { id: 'k1', owner_id: 'kat', title: 'Silk pillowcase', url: '', price: '$89', details: 'Queen', notes: '', favorite: true, colors: [{ name: 'Pink', hex: '#f0a8c0' }] },
     { id: 'k2', owner_id: 'kat', title: 'Pottery class', url: '', price: '$120', details: '', notes: 'Any studio near us!', favorite: false },
     { id: 'n1', owner_id: 'con', title: 'Running headphones', url: '', price: '$150', details: 'Black', notes: '', favorite: true },
     { id: 'd1', owner_id: 'deb', title: 'Garden kneeler', url: '', price: '$40', details: '', notes: '', favorite: false },
     { id: 't1', owner_id: 'ty', title: 'Cast iron skillet', url: '', price: '$60', details: '12 inch', notes: '', favorite: false },
-  ].map((i) => ({ image_url: '', created_at: '', ...i })),
+  ].map((i) => ({ image_url: '', colors: [], created_at: '', ...i })),
   claims: [
     { id: 'x1', item_id: 'c2', recipient_id: 'col', claimer_id: 'deb', kind: 'full', note: '' },
     { id: 'x2', item_id: 'k1', recipient_id: 'kat', claimer_id: 'ty', kind: 'split', note: '' },
     { id: 'x3', item_id: null, recipient_id: 'con', claimer_id: 'deb', kind: 'full', note: 'Cozy socks' },
   ],
-  santa_events: [{ id: 'e1', name: 'Sibling Secret Santa', budget: '$100', created_by: 'me', drawn_at: null }],
+  santa_events: [{ id: 'e1', name: 'Sibling Secret Santa', budget: '$100', exchange_date: '2026-12-24', created_by: 'me', drawn_at: null, drawn_by: null }],
   santa_members: ['me', 'ty', 'col', 'kat', 'con'].map((p) => ({ event_id: 'e1', profile_id: p })),
   santa_matches: [],
   // hidden: claims for "me" (only the count shows)
   secret: [{ item_id: 'i1' }, { item_id: 'i2' }, { item_id: null }, { item_id: null }, { item_id: 'i3' }],
 };
 let n = 0;
+const blobs = {};
 const uid = () => 'demo' + ++n;
 
 function table(name) {
@@ -54,7 +55,7 @@ function table(name) {
   function run() {
     const rows = db[name];
     if (op === 'insert') {
-      const added = payload.map((r) => ({ id: uid(), owner_id: 'me', claimer_id: 'me', created_by: 'me', created_at: new Date().toISOString(), ...r }));
+      const added = payload.map((r) => ({ id: uid(), colors: [], owner_id: 'me', claimer_id: 'me', created_by: 'me', created_at: new Date().toISOString(), ...r }));
       rows.push(...added);
       return { data: single ? added[0] : added, error: null };
     }
@@ -76,7 +77,9 @@ function draw(ev) {
     if (s.every((a, i) => partner(a) !== s[(i + 1) % s.length])) {
       db.santa_matches = db.santa_matches.filter((m) => m.event_id !== ev)
         .concat(s.map((a, i) => ({ event_id: ev, giver_id: a, receiver_id: s[(i + 1) % s.length] })));
-      db.santa_events.find((e) => e.id === ev).drawn_at = new Date().toISOString();
+      Object.assign(db.santa_events.find((e) => e.id === ev), { drawn_at: new Date().toISOString(), drawn_by: 'me' });
+      // pretend a couple of people already opened theirs
+      db.santa_matches.forEach((m) => { if (['ty', 'col'].includes(m.giver_id)) m.seen_at = new Date().toISOString(); });
       return { data: null, error: null };
     }
   }
@@ -90,6 +93,12 @@ export const demoClient = {
     signOut: async () => { window.location.href = window.location.pathname; },
   },
   from: table,
+  storage: {
+    from: () => ({
+      upload: async (path, blob) => { blobs[path] = URL.createObjectURL(blob); return { data: { path }, error: null }; },
+      getPublicUrl: (path) => ({ data: { publicUrl: blobs[path] } }),
+    }),
+  },
   rpc: async (fn, args = {}) => {
     if (fn === 'my_gift_count') return { data: db.secret.length, error: null };
     if (fn === 'peek_my_claims') return { data: db.secret.filter((s) => s.item_id), error: null };
@@ -97,6 +106,16 @@ export const demoClient = {
     if (fn === 'reset_santa') {
       db.santa_matches = db.santa_matches.filter((m) => m.event_id !== args.ev);
       db.santa_events.find((e) => e.id === args.ev).drawn_at = null;
+      return { data: null, error: null };
+    }
+    if (fn === 'santa_status') {
+      return { data: db.santa_members.filter((m) => m.event_id === args.ev).map((m) => {
+        const x = db.santa_matches.find((y) => y.event_id === args.ev && y.giver_id === m.profile_id);
+        return { profile_id: m.profile_id, assigned: !!x, seen: !!x?.seen_at };
+      }), error: null };
+    }
+    if (fn === 'mark_santa_seen') {
+      db.santa_matches.forEach((m) => { if (m.event_id === args.ev && m.giver_id === 'me') m.seen_at ||= new Date().toISOString(); });
       return { data: null, error: null };
     }
     if (fn === 'set_partner') { const me = db.profiles.find((p) => p.id === 'me'); me.partner_id = args.p; return { data: null, error: null }; }
