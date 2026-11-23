@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { supabase, configured } from './supabase.js';
+import { supabase, configured, isDemo } from './supabase.js';
 import Tree from './Tree.jsx';
 
 /* ───────────────────────── helpers ───────────────────────── */
@@ -173,6 +173,7 @@ function Main({ session }) {
   const tab = page === 'person' ? 'family' : ['family', 'santa', 'me'].includes(page) ? page : 'home';
   return (
     <>
+      {isDemo && <div className="demo-banner">👀 Demo mode with pretend family. Nothing is saved. <a href="/">Exit</a></div>}
       <header className="topbar">
         <a href="#/home" className="brand">🎄 Gift Tree</a>
         <a href="#/me" className="me-link" aria-label="My profile"><Avatar p={me} size={34} /></a>

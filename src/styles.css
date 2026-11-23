@@ -192,3 +192,6 @@ legend { font-weight: 700; font-size: 15px; margin-bottom: 6px; padding: 0; }
   .card { padding: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
+
+.demo-banner { background: #2f7d4f; color: #fff; text-align: center; font-size: 14px; font-weight: 700; padding: 8px 12px; }
+.demo-banner a { color: #fff; }
