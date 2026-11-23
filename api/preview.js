@@ -70,6 +70,7 @@ export default async function handler(req, res) {
       signal: ctrl.signal,
     });
     clearTimeout(t);
+    if (!r.ok) return res.status(200).json({ title: '', image: '', price: '', site });
     const html = (await r.text()).slice(0, 1_500_000);
 
     const ld = jsonLdProduct(html);
