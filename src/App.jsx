@@ -822,7 +822,7 @@ function MePage({ ctx }) {
       </section>
       <section className="card">
         <h2>Add Gift Tree to your home screen</h2>
-        <p className="tiny muted">iPhone: tap the Share button, then “Add to Home Screen.” Android: tap ⋮, then “Add to Home screen.”</p>
+        <p className="tiny muted">iPhone: open Gift Tree in <strong>Safari</strong> and sign in first, then tap the Share button → “Add to Home Screen.” Android: tap ⋮ → “Add to Home screen.”</p>
       </section>
       <button className="btn ghost full" onClick={() => supabase.auth.signOut()}>Sign out</button>
     </>
